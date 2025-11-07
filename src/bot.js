@@ -18,22 +18,24 @@ const PORT = process.env.PORT || 8080;
 let clientGlobal = null;
 let qrRef = { code: null, connected: false };
 
+// 🟢 EXPRESS + FRONTEND
 const app = express();
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "15mb" }));
 app.use(express.static(path.join(__dirname, "frontend")));
 
+// --------- ROUTES ---------
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "frontend", "index.html"));
 });
 
-// ✅ QR status
+// 🟡 QR Status
 app.get("/api/qr", (req, res) => {
   if (qrRef.connected) return res.json({ status: "connected" });
   if (qrRef.code) return res.json({ status: "qr", qr: qrRef.code });
   res.json({ status: "waiting" });
 });
 
-// ✅ Get all WhatsApp groups
+// 🟢 Get Group IDs
 app.get("/api/groups", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "❌ WhatsApp not connected" });
@@ -50,38 +52,49 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// ✅ UNIVERSAL Message Send API (text/image/custom)
+// 🧩 UNIVERSAL MESSAGE API
 app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "❌ WhatsApp not connected" });
-    const isReady = await clientGlobal.isConnected();
-    if (!isReady) return res.status(400).json({ error: "⚠️ WhatsApp not ready" });
 
-    const axios = (await import("axios")).default;
+    const isReady = await clientGlobal.isConnected();
+    if (!isReady) return res.status(400).json({ error: "⚠️ WhatsApp not ready yet" });
+
     const body = req.body || {};
     const groups = body.groupIds || GROUP_IDS;
-    const message = body.message || "🛍️ New Deal Available!";
+    const message = body.message || "💥 Loot Alert! New Deal Dropped!";
     const imageUrl = body.image || null;
 
-    if (!groups || groups.length === 0) {
+    if (!groups || groups.length === 0)
       return res.status(400).json({ error: "⚠️ No group IDs provided" });
-    }
+
+    const axios = (await import("axios")).default;
 
     for (let group of groups) {
       const chatId = group.includes("@g.us") ? group.trim() : `${group.trim()}@g.us`;
       log.info(`📨 Sending message to ${chatId}`);
 
+      // 🧠 Optional FOMO enhancement
+      const formattedMsg = `
+🔥 *Limited Offer Alert!*  
+${message}
+
+🕒 Hurry up! Offers ending soon ⏳  
+🛒 Grab yours before stock runs out!
+
+👉 ${body.link || "https://amzn.to/trendingdeal"}
+`;
+
       if (imageUrl) {
-        // Convert image to base64
         const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
         const base64Image = `data:image/jpeg;base64,${Buffer.from(response.data).toString("base64")}`;
-        await clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", message);
+        await clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", formattedMsg);
       } else {
-        await clientGlobal.sendText(chatId, message);
+        await clientGlobal.sendText(chatId, formattedMsg);
       }
 
       log.success(`✅ Sent successfully to ${chatId}`);
-      await new Promise((resolve) => setTimeout(resolve, 2500)); // delay between groups
+      await new Promise((resolve) => setTimeout(resolve, 2500)); // 2.5s delay
     }
 
     res.json({ ok: true, message: "✅ Message sent to all groups!" });
@@ -91,12 +104,12 @@ app.post("/api/send", async (req, res) => {
   }
 });
 
-// ✅ Start Express Server
+// 🟢 Start Express
 app.listen(PORT, "0.0.0.0", () => {
-  log.info(`🌐 Dashboard available at http://localhost:${PORT}`);
+  log.info(`🌐 Dashboard running at: http://localhost:${PORT}`);
 });
 
-// ✅ WhatsApp Initialization
+// --------- WPPConnect WhatsApp Init ---------
 (async () => {
   try {
     log.info("⏳ Initializing WhatsApp session...");
@@ -107,15 +120,21 @@ app.listen(PORT, "0.0.0.0", () => {
       logQR: false,
       protocolTimeout: 120000,
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-        qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(urlCode)}&size=300x300`;
-        log.info("📱 QR Code ready — open dashboard and scan it with WhatsApp");
+        qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
+          urlCode
+        )}&size=300x300`;
+        log.info("📱 QR Code ready — open dashboard and scan with WhatsApp");
       },
-      onLoadingScreen: (percent, message) => {
-        log.info(`Loading... ${percent}% - ${message}`);
-      },
+      onLoadingScreen: (percent, message) => log.info(`Loading... ${percent}% - ${message}`),
       autoClose: false,
       puppeteerOptions: {
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-zygote"],
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--no-zygote",
+        ],
       },
     });
 
@@ -123,25 +142,27 @@ app.listen(PORT, "0.0.0.0", () => {
     qrRef.connected = true;
     log.success("✅ WhatsApp connected successfully!");
 
-    // List all groups
+    // 🧩 Auto list groups
     const groups = await client.listChats({ onlyGroups: true });
     groups.forEach((g) => console.log(`📢 ${g.name || "Unnamed Group"} — ${g.id._serialized}`));
 
-    // Send startup test message
+    // 📨 Send startup message
     const chatId = GROUP_IDS[0]?.includes("@g.us") ? GROUP_IDS[0] : `${GROUP_IDS[0]}@g.us`;
     const caption = createMessage(sampleDeal, AFFILIATE_ID);
     const axios = (await import("axios")).default;
     const response = await axios.get(sampleDeal.image, { responseType: "arraybuffer" });
     const base64Image = `data:image/jpeg;base64,${Buffer.from(response.data).toString("base64")}`;
 
+    log.info("🕒 Waiting 3 seconds to ensure WhatsApp ready...");
     await new Promise((resolve) => setTimeout(resolve, 3000));
+
     const ready = await client.isConnected();
     if (ready) {
       log.info(`📨 Sending startup message to ${chatId}`);
       await client.sendImageFromBase64(chatId, base64Image, "deal.jpg", caption);
-      log.success("🚀 Startup test message sent!");
+      log.success("🚀 Startup test message sent successfully!");
     } else {
-      log.warn("⚠️ WhatsApp not ready — skipped startup message.");
+      log.warn("⚠️ WhatsApp not fully ready — skipped startup message.");
     }
   } catch (err) {
     console.error("❌ FULL Init Error =>", err);
