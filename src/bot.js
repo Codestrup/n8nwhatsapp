@@ -11,31 +11,37 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 🧩 Environment Variables
 const GROUP_IDS = (process.env.GROUP_IDS || process.env.GROUP_ID || "").split(",");
 const AFFILIATE_ID = process.env.AFFILIATE_ID || "";
 const PORT = process.env.PORT || 8080;
 
+// 🌐 Globals
 let clientGlobal = null;
 let qrRef = { code: null, connected: false };
 
-// 🟢 EXPRESS + FRONTEND
+// 🟢 Express App Init
 const app = express();
 app.use(express.json({ limit: "15mb" }));
 app.use(express.static(path.join(__dirname, "frontend")));
 
-// --------- ROUTES ---------
+// ---------------------------------------------------
+// ROUTES
+// ---------------------------------------------------
+
+// Homepage
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "frontend", "index.html"));
 });
 
-// 🟡 QR Status
+// QR Status API
 app.get("/api/qr", (req, res) => {
   if (qrRef.connected) return res.json({ status: "connected" });
   if (qrRef.code) return res.json({ status: "qr", qr: qrRef.code });
   res.json({ status: "waiting" });
 });
 
-// 🟢 Get Group IDs
+// Get Groups List
 app.get("/api/groups", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "❌ WhatsApp not connected" });
@@ -52,21 +58,36 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// 🧩 UNIVERSAL MESSAGE API
+// ---------------------------------------------------
+// MESSAGE SENDING LOGIC
+// ---------------------------------------------------
+
 app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "❌ WhatsApp not connected" });
-
     const isReady = await clientGlobal.isConnected();
     if (!isReady) return res.status(400).json({ error: "⚠️ WhatsApp not ready yet" });
 
     const body = req.body || {};
     const groups = body.groupIds || GROUP_IDS;
-    const message = body.message || "💥 Loot Alert! New Deal Dropped!";
+    const message = body.message || "💥 Loot Alert! New Deal Just Dropped!";
     const imageUrl = body.image || null;
+    const productLink = body.link || "https://amzn.to/trendingdeal";
 
     if (!groups || groups.length === 0)
       return res.status(400).json({ error: "⚠️ No group IDs provided" });
+
+    // 🧠 Message Formatter (adds FOMO & urgency)
+    const formattedMessage = `
+🔥 *Limited Time Offer!*  
+${message}
+
+⚡ Hurry Up! Prices slashed only for today ⏳  
+🛍️ Grab yours before it’s gone!  
+👉 *Buy Now:* ${productLink}
+
+_Deals like this don’t wait. Neither should you!_ 💸
+`;
 
     const axios = (await import("axios")).default;
 
@@ -74,27 +95,21 @@ app.post("/api/send", async (req, res) => {
       const chatId = group.includes("@g.us") ? group.trim() : `${group.trim()}@g.us`;
       log.info(`📨 Sending message to ${chatId}`);
 
-      // 🧠 Optional FOMO enhancement
-      const formattedMsg = `
-🔥 *Limited Offer Alert!*  
-${message}
-
-🕒 Hurry up! Offers ending soon ⏳  
-🛒 Grab yours before stock runs out!
-
-👉 ${body.link || "https://amzn.to/trendingdeal"}
-`;
-
       if (imageUrl) {
-        const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
-        const base64Image = `data:image/jpeg;base64,${Buffer.from(response.data).toString("base64")}`;
-        await clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", formattedMsg);
+        try {
+          const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
+          const base64Image = `data:image/jpeg;base64,${Buffer.from(response.data).toString("base64")}`;
+          await clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", formattedMessage);
+        } catch (imgErr) {
+          log.warn(`⚠️ Image failed, sending text instead to ${chatId}`);
+          await clientGlobal.sendText(chatId, formattedMessage);
+        }
       } else {
-        await clientGlobal.sendText(chatId, formattedMsg);
+        await clientGlobal.sendText(chatId, formattedMessage);
       }
 
-      log.success(`✅ Sent successfully to ${chatId}`);
-      await new Promise((resolve) => setTimeout(resolve, 2500)); // 2.5s delay
+      log.success(`✅ Message sent successfully to ${chatId}`);
+      await new Promise((resolve) => setTimeout(resolve, 2500)); // Anti-ban delay
     }
 
     res.json({ ok: true, message: "✅ Message sent to all groups!" });
@@ -104,12 +119,17 @@ ${message}
   }
 });
 
-// 🟢 Start Express
+// ---------------------------------------------------
+// EXPRESS SERVER
+// ---------------------------------------------------
 app.listen(PORT, "0.0.0.0", () => {
-  log.info(`🌐 Dashboard running at: http://localhost:${PORT}`);
+  log.info(`🌐 Dashboard running at http://localhost:${PORT}`);
 });
 
-// --------- WPPConnect WhatsApp Init ---------
+// ---------------------------------------------------
+// WHATSAPP SESSION INITIALIZATION
+// ---------------------------------------------------
+
 (async () => {
   try {
     log.info("⏳ Initializing WhatsApp session...");
@@ -123,9 +143,10 @@ app.listen(PORT, "0.0.0.0", () => {
         qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
           urlCode
         )}&size=300x300`;
-        log.info("📱 QR Code ready — open dashboard and scan with WhatsApp");
+        log.info("📱 QR Code ready — open dashboard & scan via WhatsApp");
       },
-      onLoadingScreen: (percent, message) => log.info(`Loading... ${percent}% - ${message}`),
+      onLoadingScreen: (percent, message) =>
+        log.info(`Loading... ${percent}% - ${message}`),
       autoClose: false,
       puppeteerOptions: {
         args: [
@@ -142,11 +163,13 @@ app.listen(PORT, "0.0.0.0", () => {
     qrRef.connected = true;
     log.success("✅ WhatsApp connected successfully!");
 
-    // 🧩 Auto list groups
+    // 🧩 Auto list all groups
     const groups = await client.listChats({ onlyGroups: true });
     groups.forEach((g) => console.log(`📢 ${g.name || "Unnamed Group"} — ${g.id._serialized}`));
 
-    // 📨 Send startup message
+    // ---------------------------------------------------
+    // SEND STARTUP TEST MESSAGE
+    // ---------------------------------------------------
     const chatId = GROUP_IDS[0]?.includes("@g.us") ? GROUP_IDS[0] : `${GROUP_IDS[0]}@g.us`;
     const caption = createMessage(sampleDeal, AFFILIATE_ID);
     const axios = (await import("axios")).default;
