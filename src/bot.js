@@ -60,7 +60,7 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// ✅ FIXED: Send test message manually
+// ✅ FIXED: Send dynamic message from N8N or Postman
 app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal)
@@ -72,8 +72,18 @@ app.post("/api/send", async (req, res) => {
         .status(400)
         .json({ error: "⚠️ WhatsApp not ready yet. Try again in a few seconds." });
 
-    const image = sampleDeal.image;
-    const caption = createMessage(sampleDeal, AFFILIATE_ID);
+    // ✅ Get custom payload from N8N or fallback to sampleDeal
+    const deal = req.body.deal || req.body || sampleDeal;
+
+    const name = deal.name || deal.title || "Unknown Product";
+    const price = deal.price || "N/A";
+    const discount = deal.discount || 0;
+    const link = deal.link || "https://example.com";
+    const image =
+      deal.image ||
+      "https://upload.wikimedia.org/wikipedia/commons/3/3f/Placeholder_view_vector.svg";
+
+    const caption = `🔥 *${name}*\n💰 Price: ₹${price}\n💸 Discount: ${discount}%\n\n🔗 Buy Now: ${link}\n\n#LootAlert`;
 
     // ✅ Proper Base64 Conversion with headers and prefix
     const axios = (await import("axios")).default;
@@ -90,7 +100,6 @@ app.post("/api/send", async (req, res) => {
       response.data
     ).toString("base64")}`;
 
-    // ✅ Fallback if image fails or empty
     if (!base64Image || base64Image.length < 500) {
       log.warn("⚠️ Image invalid or too short, using placeholder.");
       const fallback = await axios.get(
@@ -103,7 +112,7 @@ app.post("/api/send", async (req, res) => {
     }
 
     const chatId = GROUP_ID.includes("@g.us") ? GROUP_ID : `${GROUP_ID}@g.us`;
-    log.info(`📨 Sending test message to ${chatId}`);
+    log.info(`📨 Sending dynamic message to ${chatId}`);
 
     await clientGlobal.sendImageFromBase64(
       chatId.toString(),
@@ -112,8 +121,8 @@ app.post("/api/send", async (req, res) => {
       caption
     );
 
-    log.success("✅ Test message sent successfully!");
-    res.json({ ok: true, message: "✅ Test message sent to group!" });
+    log.success("✅ Dynamic message sent successfully!");
+    res.json({ ok: true, message: "✅ Message sent to group successfully!" });
   } catch (err) {
     console.error("❌ FULL Send Error =>", err);
     res.status(500).json({ error: err?.message || err.toString() });
@@ -153,13 +162,11 @@ app.listen(PORT, "0.0.0.0", () => {
     qrRef.connected = true;
     log.success("✅ WhatsApp connected successfully!");
 
-    // ✅ Auto-list groups in console
     const groups = await client.listChats({ onlyGroups: true });
     groups.forEach((g) =>
       console.log(`📢 ${g.name || "Unnamed Group"} — ${g.id._serialized}`)
     );
 
-    // ✅ Startup message (wait for WhatsApp sync)
     const caption = createMessage(sampleDeal, AFFILIATE_ID);
     const axios = (await import("axios")).default;
     const response = await axios.get(sampleDeal.image, {
