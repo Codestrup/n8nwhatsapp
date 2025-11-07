@@ -12,7 +12,11 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const GROUP_ID = process.env.GROUP_ID;
+const GROUP_IDS = (process.env.GROUP_IDS || process.env.GROUP_ID || "")
+  .split(",")
+  .map((g) => g.trim())
+  .filter(Boolean);
+
 const AFFILIATE_ID = process.env.AFFILIATE_ID;
 const PORT = process.env.PORT || 8080;
 
@@ -60,7 +64,7 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// ✅ Send dynamic message from n8n or Postman
+// ✅ FIXED: Send dynamic message to 1 or multiple groups
 app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal)
@@ -70,54 +74,64 @@ app.post("/api/send", async (req, res) => {
     if (!isReady)
       return res
         .status(400)
-        .json({ error: "⚠️ WhatsApp not ready yet. Try again in a few seconds." });
+        .json({ error: "⚠️ WhatsApp not ready yet. Try again later." });
 
-    // ✅ Accept dynamic data from request
-    const deal = req.body.deal || sampleDeal;
-    const image = deal.image || sampleDeal.image;
-    const caption = createMessage(deal, AFFILIATE_ID);
+    const { groupIds, deal, message, image } = req.body;
 
-    // ✅ Convert image to Base64 safely
-    const axios = (await import("axios")).default;
-    const response = await axios.get(image, {
-      responseType: "arraybuffer",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      },
-    });
+    // ✅ fallback to env groups
+    const targetGroups = groupIds && groupIds.length ? groupIds : GROUP_IDS;
 
-    let base64Image = `data:image/jpeg;base64,${Buffer.from(
-      response.data
-    ).toString("base64")}`;
+    if (!targetGroups.length)
+      return res.status(400).json({ error: "No target groups found" });
 
-    if (!base64Image || base64Image.length < 500) {
-      log.warn("⚠️ Image invalid, using fallback placeholder.");
-      const fallback = await axios.get(
-        "https://upload.wikimedia.org/wikipedia/commons/3/3f/Placeholder_view_vector.svg",
-        { responseType: "arraybuffer" }
-      );
-      base64Image = `data:image/svg+xml;base64,${Buffer.from(
-        fallback.data
-      ).toString("base64")}`;
+    // ✅ use deal or message dynamically
+    const dealData = deal || sampleDeal;
+    const msgText =
+      message || createMessage(dealData, AFFILIATE_ID) || "🔥 New Offer Alert!";
+    const imgUrl = image || dealData.image || null;
+
+    let base64Image = null;
+    if (imgUrl) {
+      try {
+        const axios = (await import("axios")).default;
+        const response = await axios.get(imgUrl, {
+          responseType: "arraybuffer",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+          },
+        });
+        base64Image = `data:image/jpeg;base64,${Buffer.from(
+          response.data
+        ).toString("base64")}`;
+      } catch (e) {
+        log.warn("⚠️ Could not load image, sending text only.");
+      }
     }
 
-    const chatId = GROUP_ID.includes("@g.us") ? GROUP_ID : `${GROUP_ID}@g.us`;
+    // ✅ Send message to each group with delay (anti-ban safe)
+    for (const gid of targetGroups) {
+      const chatId = gid.includes("@g.us") ? gid : `${gid}@g.us`;
+      log.info(`📨 Sending message to ${chatId}`);
 
-    // 🕒 Wait before sending (for Puppeteer sync)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        if (base64Image)
+          await clientGlobal.sendImageFromBase64(
+            chatId,
+            base64Image,
+            "deal.jpg",
+            msgText
+          );
+        else await clientGlobal.sendText(chatId, msgText);
 
-    log.info(`📨 Sending dynamic message to ${chatId}`);
+        log.success(`✅ Sent successfully to ${chatId}`);
+        await new Promise((r) => setTimeout(r, 2500)); // safe delay 2.5 sec
+      } catch (err) {
+        log.error(`❌ Send failed for ${chatId}: ${err.message}`);
+      }
+    }
 
-    await clientGlobal.sendImageFromBase64(
-      chatId.toString(),
-      base64Image,
-      "deal.jpg",
-      caption
-    );
-
-    log.success("✅ Dynamic message sent successfully!");
-    res.json({ ok: true, message: "✅ Dynamic message sent to group!" });
+    res.json({ ok: true, message: "✅ Message sent to all groups!" });
   } catch (err) {
     console.error("❌ FULL Send Error =>", err);
     res.status(500).json({ error: err?.message || err.toString() });
@@ -138,7 +152,7 @@ app.listen(PORT, "0.0.0.0", () => {
       session: "LootAlertStable",
       headless: "new",
       logQR: false,
-      protocolTimeout: 120000, // ⏱ 2 min
+      protocolTimeout: 120000,
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
         qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
           urlCode
@@ -169,32 +183,40 @@ app.listen(PORT, "0.0.0.0", () => {
       console.log(`📢 ${g.name || "Unnamed Group"} — ${g.id._serialized}`)
     );
 
+    // ✅ Startup test message
     const caption = createMessage(sampleDeal, AFFILIATE_ID);
     const axios = (await import("axios")).default;
     const response = await axios.get(sampleDeal.image, {
       responseType: "arraybuffer",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      },
     });
-
-    let base64Image = `data:image/jpeg;base64,${Buffer.from(
+    const base64Image = `data:image/jpeg;base64,${Buffer.from(
       response.data
     ).toString("base64")}`;
 
-    const chatId = GROUP_ID.includes("@g.us") ? GROUP_ID : `${GROUP_ID}@g.us`;
+    const firstGroup =
+      GROUP_IDS.length > 0
+        ? GROUP_IDS[0].includes("@g.us")
+          ? GROUP_IDS[0]
+          : `${GROUP_IDS[0]}@g.us`
+        : null;
 
-    log.info("🕒 Waiting 3 seconds to ensure WhatsApp ready...");
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (firstGroup) {
+      log.info("🕒 Waiting 3 seconds to ensure WhatsApp ready...");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    const ready = await client.isConnected();
-    if (ready) {
-      log.info(`📨 Sending startup message to ${chatId}`);
-      await client.sendImageFromBase64(chatId.toString(), base64Image, "deal.jpg", caption);
-      log.success("🚀 Startup test message sent to group!");
-    } else {
-      log.warn("⚠️ WhatsApp not fully ready — skipped startup message.");
+      const ready = await client.isConnected();
+      if (ready) {
+        log.info(`📨 Sending startup message to ${firstGroup}`);
+        await client.sendImageFromBase64(
+          firstGroup,
+          base64Image,
+          "deal.jpg",
+          caption
+        );
+        log.success("🚀 Startup test message sent!");
+      } else {
+        log.warn("⚠️ WhatsApp not fully ready — skipped startup message.");
+      }
     }
   } catch (err) {
     console.error("❌ FULL Init Error =>", err);
