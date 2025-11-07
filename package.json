@@ -1,0 +1,19 @@
+{
+  "name": "lootalert-bot",
+  "version": "1.0.0",
+  "description": "Unofficial WhatsApp affiliate bot (n8n compatible)",
+  "main": "src/bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "nodemon src/bot.js"
+  },
+  "dependencies": {
+    "@wppconnect-team/wppconnect": "^1.37.5",
+    "axios": "^1.13.2",
+    "chalk": "^5.6.2",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "venom-bot": "^5.3.0"
+  }
+}

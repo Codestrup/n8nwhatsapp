@@ -1,0 +1,13 @@
+2025/11/07-14:35:29.258 44b4 Reusing MANIFEST C:\Users\DDR\Desktop\lootalert\tokens\LootAlertStable\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/11/07-14:35:29.259 44b4 Recovering log #610
+2025/11/07-14:35:29.270 44b4 Reusing old log C:\Users\DDR\Desktop\lootalert\tokens\LootAlertStable\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000610.log 
+2025/11/07-14:35:30.329 44b4 Level-0 table #615: started
+2025/11/07-14:35:30.340 44b4 Level-0 table #615: 174911 bytes OK
+2025/11/07-14:35:30.342 44b4 Delete type=0 #610
+2025/11/07-14:35:30.343 44b4 Manual compaction at level-0 from '\x00\xd4\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\xd5\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/11/07-14:35:34.076 7694 Compacting 1@1 + 1@2 files
+2025/11/07-14:35:34.138 7694 Generated table #616@1: 51122 keys, 2166506 bytes
+2025/11/07-14:35:34.138 7694 Compacted 1@1 + 1@2 files => 2166506 bytes
+2025/11/07-14:35:34.141 7694 compacted to: files[ 0 0 1 0 0 0 0 ]
+2025/11/07-14:35:34.142 7694 Delete type=2 #612
+2025/11/07-14:35:34.142 7694 Delete type=2 #615

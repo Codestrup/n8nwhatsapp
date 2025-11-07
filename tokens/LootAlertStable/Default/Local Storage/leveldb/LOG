@@ -1,0 +1,6 @@
+2025/11/07-14:35:27.906 66bc Reusing MANIFEST C:\Users\DDR\Desktop\lootalert\tokens\LootAlertStable\Default\Local Storage\leveldb/MANIFEST-000001
+2025/11/07-14:35:27.916 66bc Recovering log #4
+2025/11/07-14:35:27.922 66bc Reusing old log C:\Users\DDR\Desktop\lootalert\tokens\LootAlertStable\Default\Local Storage\leveldb/000004.log 
+2025/11/07-14:38:28.660 8028 Level-0 table #8: started
+2025/11/07-14:38:28.698 8028 Level-0 table #8: 13626 bytes OK
+2025/11/07-14:38:28.704 8028 Delete type=0 #4
