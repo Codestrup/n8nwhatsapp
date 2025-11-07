@@ -60,7 +60,7 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// ✅ FIXED: Send dynamic message from N8N or Postman
+// ✅ Send dynamic message from n8n or Postman
 app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal)
@@ -72,27 +72,18 @@ app.post("/api/send", async (req, res) => {
         .status(400)
         .json({ error: "⚠️ WhatsApp not ready yet. Try again in a few seconds." });
 
-    // ✅ Get custom payload from N8N or fallback to sampleDeal
-    const deal = req.body.deal || req.body || sampleDeal;
+    // ✅ Accept dynamic data from request
+    const deal = req.body.deal || sampleDeal;
+    const image = deal.image || sampleDeal.image;
+    const caption = createMessage(deal, AFFILIATE_ID);
 
-    const name = deal.name || deal.title || "Unknown Product";
-    const price = deal.price || "N/A";
-    const discount = deal.discount || 0;
-    const link = deal.link || "https://example.com";
-    const image =
-      deal.image ||
-      "https://upload.wikimedia.org/wikipedia/commons/3/3f/Placeholder_view_vector.svg";
-
-    const caption = `🔥 *${name}*\n💰 Price: ₹${price}\n💸 Discount: ${discount}%\n\n🔗 Buy Now: ${link}\n\n#LootAlert`;
-
-    // ✅ Proper Base64 Conversion with headers and prefix
+    // ✅ Convert image to Base64 safely
     const axios = (await import("axios")).default;
     const response = await axios.get(image, {
       responseType: "arraybuffer",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
       },
     });
 
@@ -101,7 +92,7 @@ app.post("/api/send", async (req, res) => {
     ).toString("base64")}`;
 
     if (!base64Image || base64Image.length < 500) {
-      log.warn("⚠️ Image invalid or too short, using placeholder.");
+      log.warn("⚠️ Image invalid, using fallback placeholder.");
       const fallback = await axios.get(
         "https://upload.wikimedia.org/wikipedia/commons/3/3f/Placeholder_view_vector.svg",
         { responseType: "arraybuffer" }
@@ -112,6 +103,10 @@ app.post("/api/send", async (req, res) => {
     }
 
     const chatId = GROUP_ID.includes("@g.us") ? GROUP_ID : `${GROUP_ID}@g.us`;
+
+    // 🕒 Wait before sending (for Puppeteer sync)
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
     log.info(`📨 Sending dynamic message to ${chatId}`);
 
     await clientGlobal.sendImageFromBase64(
@@ -122,7 +117,7 @@ app.post("/api/send", async (req, res) => {
     );
 
     log.success("✅ Dynamic message sent successfully!");
-    res.json({ ok: true, message: "✅ Message sent to group successfully!" });
+    res.json({ ok: true, message: "✅ Dynamic message sent to group!" });
   } catch (err) {
     console.error("❌ FULL Send Error =>", err);
     res.status(500).json({ error: err?.message || err.toString() });
@@ -141,8 +136,9 @@ app.listen(PORT, "0.0.0.0", () => {
 
     const client = await wppconnect.create({
       session: "LootAlertStable",
-      headless: true,
+      headless: "new",
       logQR: false,
+      protocolTimeout: 120000, // ⏱ 2 min
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
         qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
           urlCode
@@ -154,7 +150,13 @@ app.listen(PORT, "0.0.0.0", () => {
       },
       autoClose: false,
       puppeteerOptions: {
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--no-zygote",
+        ],
       },
     });
 
@@ -174,24 +176,12 @@ app.listen(PORT, "0.0.0.0", () => {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
       },
     });
 
     let base64Image = `data:image/jpeg;base64,${Buffer.from(
       response.data
     ).toString("base64")}`;
-
-    if (!base64Image || base64Image.length < 500) {
-      log.warn("⚠️ Image invalid, using fallback placeholder.");
-      const fallback = await axios.get(
-        "https://upload.wikimedia.org/wikipedia/commons/3/3f/Placeholder_view_vector.svg",
-        { responseType: "arraybuffer" }
-      );
-      base64Image = `data:image/svg+xml;base64,${Buffer.from(
-        fallback.data
-      ).toString("base64")}`;
-    }
 
     const chatId = GROUP_ID.includes("@g.us") ? GROUP_ID : `${GROUP_ID}@g.us`;
 
