@@ -1,8 +1,9 @@
-import chalk from 'chalk';
+// utils/logger.js
+import chalk from "chalk";
 
 export const log = {
-  info: (msg) => console.log(chalk.cyan(`[INFO] ${msg}`)),
-  success: (msg) => console.log(chalk.green(`[SUCCESS] ${msg}`)),
-  warn: (msg) => console.log(chalk.yellow(`[WARN] ${msg}`)),
-  error: (msg) => console.log(chalk.red(`[ERROR] ${msg}`)),
+  info: (msg, ...args) => console.log(chalk.cyanBright("[INFO]"), msg, ...args),
+  success: (msg, ...args) => console.log(chalk.greenBright("[SUCCESS]"), msg, ...args),
+  warn: (msg, ...args) => console.log(chalk.yellowBright("[WARN]"), msg, ...args),
+  error: (msg, ...args) => console.log(chalk.redBright("[ERROR]"), msg, ...args),
 };
