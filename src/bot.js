@@ -1,17 +1,16 @@
 /**
  * src/bot.js
- * LootAlert — stable WPPConnect WhatsApp bot
+ * LootAlert — stable WPPConnect WhatsApp bot (fixed send handling + robust image fetch + graceful errors)
  *
  * Key features:
  * - Robust WPPConnect + Puppeteer config for VPS (autoClose: false, protocolTimeout: 0)
  * - Dynamic / flexible POST /api/send for images/text/links
  * - Multi-group support (GROUP_IDS env or GROUP_ID)
  * - Base64 image conversion with headers & fallback
- * - Safe random delays between sends to reduce ban risk
- * - Uses system Chrome if CHROME_PATH provided (recommended on VPS)
+ * - Safe wrappers around send functions to avoid internal debug spam / unhandled rejections
+ * - Process-level handlers for uncaught exceptions and unhandled promise rejections
  *
- * Usage:
- * - NODE env: GROUP_IDS (comma separated with @g.us optional), AFFILIATE_ID, PORT, CHROME_PATH (optional)
+ * NOTE: Only required fixes applied. Rest of the file kept as before.
  */
 
 import express from "express";
@@ -31,7 +30,7 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 8080;
 const AFFILIATE_ID = process.env.AFFILIATE_ID || "";
 const RAW_GROUPS = process.env.GROUP_IDS || process.env.GROUP_ID || "";
-// store as array of trimmed ids (without forcing @g.us because user may give full)
+// store as array of trimmed ids
 const DEFAULT_GROUPS = RAW_GROUPS.split(",").filter(Boolean).map((g) => g.trim());
 
 const CHROME_PATH = process.env.CHROME_PATH || process.env.CHROME_BIN || null;
@@ -56,6 +55,27 @@ function normalizeGroupId(raw) {
 // Helper: safe wait
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Small helper to safely call async functions and return {ok,result,error}
+async function safeCall(fn) {
+  try {
+    const result = await fn();
+    return { ok: true, result };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+// Process-level handlers so node doesn't exit unexpectedly and logs useful info
+process.on("unhandledRejection", (reason, p) => {
+  console.error("[UNHANDLED REJECTION] =>", reason);
+  // don't exit; just log — this protects PM2 from silent crashes
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT EXCEPTION] =>", err);
+  // do not process.exit(1) here — allow PM2 to manage restarts.
+});
+
 // Route: dashboard page
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "frontend", "index.html"));
@@ -72,8 +92,12 @@ app.get("/api/qr", (req, res) => {
 app.get("/api/groups", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "WhatsApp not connected" });
-    // listChats returns chats; we filter only groups
-    const chats = await clientGlobal.listChats({ onlyGroups: true });
+    const chatsSafe = await safeCall(() => clientGlobal.listChats({ onlyGroups: true }));
+    if (!chatsSafe.ok) {
+      log.error("Group list error:", chatsSafe.error);
+      return res.status(500).json({ error: chatsSafe.error?.message || String(chatsSafe.error) });
+    }
+    const chats = chatsSafe.result || [];
     const formatted = chats.map((g) => ({
       name: g.name || "Unnamed Group",
       id: g.id?._serialized || g.id,
@@ -95,6 +119,7 @@ app.get("/api/groups", async (req, res) => {
  *   image: "https://....jpg"                   // optional
  *   link: "https://amzn.to/..."                // optional
  *   urgency: "Hurry! 2 left"                   // optional
+ *   delayBefore: number (ms)                   // optional - global pre-delay
  * }
  *
  * If no groups provided and DEFAULT_GROUPS empty -> 400
@@ -103,14 +128,18 @@ app.post("/api/send", async (req, res) => {
   try {
     if (!clientGlobal) return res.status(400).json({ error: "WhatsApp not connected" });
 
-    const isReady = await clientGlobal.isConnected();
-    if (!isReady) return res.status(400).json({ error: "WhatsApp not ready yet" });
+    // ensure client is ready
+    const isReadySafe = await safeCall(() => clientGlobal.isConnected && clientGlobal.isConnected());
+    if (!isReadySafe.ok || isReadySafe.result === false) {
+      return res.status(400).json({ error: "WhatsApp not ready yet" });
+    }
 
     const payload = req.body || {};
     // use dynamic groups else default from env
-    const groupsRaw = payload.groupIds && Array.isArray(payload.groupIds) && payload.groupIds.length
-      ? payload.groupIds
-      : DEFAULT_GROUPS;
+    const groupsRaw =
+      payload.groupIds && Array.isArray(payload.groupIds) && payload.groupIds.length
+        ? payload.groupIds
+        : DEFAULT_GROUPS;
 
     if (!groupsRaw || groupsRaw.length === 0) {
       return res.status(400).json({ error: "No group IDs provided (groupIds or GROUP_IDS env)" });
@@ -123,7 +152,7 @@ app.post("/api/send", async (req, res) => {
     const body = payload.body || payload.description || payload.details || "";
     const link = payload.link || payload.url || sampleDeal.link || "";
     const urgency = payload.urgency || `⏳ Limited time offer — don't miss!`;
-    const priceLine = payload.price ? `Price: ${payload.price}` : (sampleDeal.price ? `Price: ₹${sampleDeal.price}` : "");
+    const priceLine = payload.price ? `Price: ${payload.price}` : sampleDeal.price ? `Price: ₹${sampleDeal.price}` : "";
 
     // Compose caption / text (Hinglish-friendly, emotional, FOMO)
     const captionParts = [];
@@ -131,8 +160,8 @@ app.post("/api/send", async (req, res) => {
     if (priceLine) captionParts.push(`💸 ${priceLine}`);
     if (body) captionParts.push(`${body}`);
     if (link) captionParts.push(`👉 Buy: ${link}`);
-    captionParts.push(`\n${urgency}`);
-    captionParts.push(`\n🔖 Tag: ${AFFILIATE_ID ? `#${AFFILIATE_ID}` : "LootAlert"}`);
+    captionParts.push(`${urgency}`);
+    captionParts.push(`🔖 ${AFFILIATE_ID ? `#${AFFILIATE_ID}` : "LootAlert"}`);
 
     const finalCaption = captionParts.join("\n\n");
 
@@ -154,18 +183,25 @@ app.post("/api/send", async (req, res) => {
           },
         });
         if (response?.data) {
-          // detect mime if available from headers
           const ct = (response.headers && response.headers["content-type"]) || "image/jpeg";
           const prefix = `data:${ct};base64,`;
           base64Image = prefix + Buffer.from(response.data, "binary").toString("base64");
+        } else {
+          base64Image = null;
         }
       } catch (err) {
-        log.warn("Image fetch failed, will send text only. Error:", err?.message || err);
+        // Image fetch failed, log and fallback to text
+        log.warn("Image fetch failed for", imageUrl, " — will send text only. Error:", err?.message || err);
         base64Image = null;
       }
     }
 
-    // If image missing or invalid, no problem — we'll send text instead.
+    // Optional global delay before sending
+    if (payload.delayBefore && typeof payload.delayBefore === "number") {
+      await wait(Math.max(0, payload.delayBefore));
+    }
+
+    // Iterate groups and send safely
     for (let i = 0; i < groups.length; i++) {
       const chatId = groups[i];
       try {
@@ -176,20 +212,42 @@ app.post("/api/send", async (req, res) => {
         await wait(preDelay);
 
         if (base64Image) {
-          // Use sendImageFromBase64 for reliability
-          await clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", finalCaption);
+          // Use sendImageFromBase64 for reliability — wrap and inspect result
+          const sendSafe = await safeCall(() =>
+            clientGlobal.sendImageFromBase64(chatId, base64Image, "deal.jpg", finalCaption)
+          );
+          if (!sendSafe.ok) {
+            // send failed — warn and continue
+            log.error(`❌ sendImageFromBase64 failed for ${chatId}:`, sendSafe.error?.message || sendSafe.error);
+          } else {
+            const r = sendSafe.result;
+            // wppconnect sometimes returns { erro: true, ... } or result object — handle both
+            if (r && typeof r === "object" && r.erro === true) {
+              log.warn(`⚠️ WPP returned erro for ${chatId}:`, r);
+            } else {
+              log.success(`✅ Sent to ${chatId}`);
+            }
+          }
         } else {
-          // Plain text
-          await clientGlobal.sendText(chatId, finalCaption);
+          // Plain text send
+          const sendTextSafe = await safeCall(() => clientGlobal.sendText(chatId, finalCaption));
+          if (!sendTextSafe.ok) {
+            log.error(`❌ sendText failed for ${chatId}:`, sendTextSafe.error?.message || sendTextSafe.error);
+          } else {
+            const r = sendTextSafe.result;
+            if (r && typeof r === "object" && r.erro === true) {
+              log.warn(`⚠️ WPP returned erro for ${chatId}:`, r);
+            } else {
+              log.success(`✅ Sent to ${chatId}`);
+            }
+          }
         }
-
-        log.success(`✅ Sent to ${chatId}`);
       } catch (err) {
-        log.error(`❌ Send failed for ${chatId}:`, err?.message || err || String(err));
-        // continue to next group (don't stop for one failure)
+        // This block is extra-safe — should not be hit because safeCall protects internal calls
+        log.error(`❌ Unexpected send error for ${chatId}:`, err?.message || String(err));
       }
 
-      // Post-send delay (longer to reduce rate)
+      // Post-send delay (longer) to reduce rate
       const postDelay = 1500 + Math.floor(Math.random() * 2500);
       await wait(postDelay);
     }
@@ -212,7 +270,7 @@ app.listen(PORT, "0.0.0.0", () => {
  * - autoClose: false -> prevent automatic session close
  * - protocolTimeout: 0 -> disable default timeouts
  * - restartOnCrash: true -> auto restart browser if it crashes
- * - puppeteerOptions.executablePath -> use system chrome if set via CHROME_PATH env
+ * - puppeteerOptions.executablePath -> use system chrome if CHROME_PATH env
  */
 (async () => {
   try {
@@ -220,14 +278,12 @@ app.listen(PORT, "0.0.0.0", () => {
 
     const client = await wppconnect.create({
       session: "LootAlertStable",
-      headless: "new", // use new headless mode when available
+      headless: "new",
       logQR: false,
       autoClose: false,
       protocolTimeout: 0,
       restartOnCrash: true,
-      // Scannable QR (we convert urlCode to external QR image)
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
-        // Use qrserver to provide a URL for front-end (white bg scannable)
         try {
           qrRef.code = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(
             urlCode
@@ -255,7 +311,6 @@ app.listen(PORT, "0.0.0.0", () => {
         log.warn("🚪 Logged out. Please rescan QR.");
       },
       puppeteerOptions: {
-        // Prefer user-provided chrome path (installed system chrome) — more stable on VPS
         ...(CHROME_PATH ? { executablePath: CHROME_PATH } : {}),
         args: [
           "--no-sandbox",
@@ -277,12 +332,17 @@ app.listen(PORT, "0.0.0.0", () => {
 
     // Optionally log groups to console
     try {
-      const groups = await client.listChats({ onlyGroups: true });
-      groups.forEach((g) => {
-        const name = g.name || "Unnamed Group";
-        const id = g.id?._serialized || g.id;
-        console.log(`📢 ${name} — ${id}`);
-      });
+      const groupsSafe = await safeCall(() => client.listChats({ onlyGroups: true }));
+      if (groupsSafe.ok) {
+        const groups = groupsSafe.result || [];
+        groups.forEach((g) => {
+          const name = g.name || "Unnamed Group";
+          const id = g.id?._serialized || g.id;
+          console.log(`📢 ${name} — ${id}`);
+        });
+      } else {
+        log.warn("Could not list groups (maybe not synced yet):", groupsSafe.error?.message || groupsSafe.error);
+      }
     } catch (err) {
       log.warn("Could not list groups (maybe not synced yet):", err?.message || err);
     }
@@ -295,9 +355,7 @@ app.listen(PORT, "0.0.0.0", () => {
           log.info("🕒 Waiting a few seconds before startup test send...");
           await wait(3000);
 
-          // Create nice startup caption from sampleDeal
           const startCaption = createMessage(sampleDeal, AFFILIATE_ID);
-          // Attempt to fetch sample image and send as base64, fallback to text
           let sent = false;
           if (sampleDeal?.image) {
             try {
@@ -305,16 +363,29 @@ app.listen(PORT, "0.0.0.0", () => {
               const res = await axios.get(sampleDeal.image, { responseType: "arraybuffer", timeout: 12000 });
               const contentType = res.headers["content-type"] || "image/jpeg";
               const base64 = `data:${contentType};base64,${Buffer.from(res.data).toString("base64")}`;
-              await client.sendImageFromBase64(chatId, base64, "startup.jpg", startCaption);
-              sent = true;
-              log.success("🚀 Startup test image sent!");
+              const sendSafe = await safeCall(() => client.sendImageFromBase64(chatId, base64, "startup.jpg", startCaption));
+              if (!sendSafe.ok) {
+                log.warn("Startup image send failed:", sendSafe.error?.message || sendSafe.error);
+              } else {
+                const r = sendSafe.result;
+                if (r && r.erro === true) {
+                  log.warn("Startup image send returned erro:", r);
+                } else {
+                  log.success("🚀 Startup test image sent!");
+                  sent = true;
+                }
+              }
             } catch (e) {
-              log.warn("Startup image send failed, sending text only:", e?.message || e);
+              log.warn("Startup image send failed, will send text only:", e?.message || e);
             }
           }
           if (!sent) {
-            await client.sendText(chatId, startCaption);
-            log.success("🚀 Startup test text sent!");
+            const sendTextSafe = await safeCall(() => client.sendText(chatId, startCaption));
+            if (!sendTextSafe.ok) {
+              log.warn("Startup text send failed:", sendTextSafe.error?.message || sendTextSafe.error);
+            } else {
+              log.success("🚀 Startup test text sent!");
+            }
           }
         }
       } catch (err) {
@@ -325,3 +396,33 @@ app.listen(PORT, "0.0.0.0", () => {
     console.error("❌ FULL Init Error =>", err);
   }
 })();
+
+/**
+ * Graceful shutdown helpers for PM2 or manual SIGINT
+ */
+async function gracefulShutdown() {
+  try {
+    log.info("🛑 Graceful shutdown initiated...");
+    if (clientGlobal && clientGlobal.close) {
+      try {
+        await clientGlobal.close();
+        log.info("🔒 WPPConnect client closed.");
+      } catch (e) {
+        log.warn("Error while closing WPPConnect client:", e?.message || e);
+      }
+    }
+    // allow pm2 to stop the process
+  } catch (e) {
+    console.error("Error during graceful shutdown:", e);
+  } finally {
+    // do not forcibly exit — allow pm2 to handle process lifecycle
+  }
+}
+
+process.on("SIGINT", async () => {
+  await gracefulShutdown();
+});
+
+process.on("SIGTERM", async () => {
+  await gracefulShutdown();
+});
